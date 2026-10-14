@@ -12,7 +12,7 @@ class ParsingBenchSuite extends munit.FunSuite {
     val bench = new ParsingBench
     bench.name = "docker-compose.yaml"
     bench.setup()
-    assertEquals(bench.fromStringToEvents.isRight, true)
+    assertEquals(bench.fromStringToNode.isRight, true)
   }
 
   test("docker-compose.yaml from string to struct") {
@@ -33,7 +33,7 @@ class ParsingBenchSuite extends munit.FunSuite {
     val bench = new ParsingBench
     bench.name = "geo.yaml"
     bench.setup()
-    assertEquals(bench.fromStringToEvents.isRight, true)
+    assertEquals(bench.fromStringToNode.isRight, true)
   }
 
   test("geo.yaml from string to struct") {
