@@ -1,0 +1,5 @@
+{
+  "allocation": 0.05,
+  "throughput": 0.10,
+  "scaling": 0.25
+}
