@@ -76,6 +76,8 @@ lazy val integration = project
 lazy val benchmark = project
   .enablePlugins(JmhPlugin)
   .dependsOn(core.jvm)
+  // CorpusBenchSuite renders events with the yaml-test-suite formatter.
+  .dependsOn(integration % "test->compile")
   .settings(
     crossScalaVersions := Seq(scala3Version),
     libraryDependencies ++= List(
