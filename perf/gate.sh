@@ -6,8 +6,10 @@
 # Exit 0: pass. Exit 1: regression. Exit 2: infrastructure error.
 #
 # The baseline commit is perf/baseline.sha. Its core is built in a git worktree
-# under ${TMPDIR}/scala-yaml-perf-worktrees and reused across invocations.
-# benchmark/ is copied from this tree first, so both sides run the same harness.
+# under /tmp/scala-yaml-perf-worktrees and reused across invocations.
+# benchmark/ and build.sbt are copied from this tree first, so both sides run
+# the same harness and only core/ differs. build.sbt has to be copied because
+# sbt-jmh's Jmh config extends Test, so Jmh/run compiles benchmark tests.
 
 set -euo pipefail
 
@@ -84,7 +86,7 @@ version_matches() {
   local home=$1
   local out
   [[ -x "$home/bin/java" ]] || return 1
-  out=$(mktemp)
+  out=$(mktemp /tmp/scala-yaml-jdk.XXXXXX)
   if ! "$home/bin/java" -version >"$out" 2>&1; then
     rm -f "$out"
     return 1
@@ -154,7 +156,7 @@ else
   DIRTY=false
 fi
 
-CACHE_ROOT="${TMPDIR:-/tmp}/scala-yaml-perf-worktrees"
+CACHE_ROOT="/tmp/scala-yaml-perf-worktrees"
 BASELINE_WT="$CACHE_ROOT/baseline-$BASELINE_SHA"
 START=$(date +%s)
 mkdir -p "$CACHE_ROOT"
@@ -224,6 +226,16 @@ if only_a or only_b or differ:
 PY
 then
   die "benchmark trees differ after copy"
+fi
+
+# Jmh/run compiles benchmark tests. The corpus digest suite needs the
+# integration test dependency, which is not on the baseline commit.
+cp "$ROOT/build.sbt" "$BASELINE_WT/build.sbt" \
+  || die "failed to copy build.sbt onto the baseline worktree"
+cmp -s "$ROOT/build.sbt" "$BASELINE_WT/build.sbt" \
+  || die "build.sbt differs after copy"
+if ! git -C "$BASELINE_WT" diff --quiet -- core integration-tests project; then
+  die "baseline core, integration-tests, or project drifted from $BASELINE_SHA"
 fi
 
 mkdir -p "$OUT"
