@@ -1,0 +1,3 @@
+benchmark/**
+perf/**
+build.sbt

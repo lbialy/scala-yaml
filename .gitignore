@@ -45,3 +45,6 @@ tests/repositories/
 *.log
 
 generated-docs
+
+# performance gate results
+perf/out/
