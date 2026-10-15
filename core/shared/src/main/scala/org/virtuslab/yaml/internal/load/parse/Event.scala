@@ -38,11 +38,19 @@ object EventKind {
       metadata: NodeEventMetadata = NodeEventMetadata.empty
   ) extends EventKind
 
-  case class SequenceStart(metadata: NodeEventMetadata = NodeEventMetadata.empty) extends EventKind
-  case object SequenceEnd                                                         extends EventKind
+  /** `flow` is true for `[ ... ]`, false for a block sequence. */
+  case class SequenceStart(
+      metadata: NodeEventMetadata = NodeEventMetadata.empty,
+      flow: Boolean = false
+  ) extends EventKind
+  case object SequenceEnd extends EventKind
 
-  case class MappingStart(metadata: NodeEventMetadata = NodeEventMetadata.empty) extends EventKind
-  case object MappingEnd                                                         extends EventKind
+  /** `flow` is true for `{ ... }` and for a single pair inside a flow sequence (`[ a: b ]`). */
+  case class MappingStart(
+      metadata: NodeEventMetadata = NodeEventMetadata.empty,
+      flow: Boolean = false
+  ) extends EventKind
+  case object MappingEnd extends EventKind
 }
 
 /**

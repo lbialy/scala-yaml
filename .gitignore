@@ -48,3 +48,6 @@ generated-docs
 
 # performance gate results
 perf/out/
+
+# vendored yaml-test-suite data (contains in.yaml / out.yaml files)
+!integration-tests/yaml-test-suite/**

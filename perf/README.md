@@ -82,7 +82,7 @@ From the repository root:
 sbt -Dregenerate=true 'benchmark/test'
 ```
 
-A human does this when an intended event-format change lands. The planned case is flow-collection markers `{}` / `[]` on `SequenceStart` / `MappingStart`. The corpus has no flow collections, so that marker change on its own does not require new digests. The schemas do have multi-line scalars whose continuation lines start with `[`, such as the IEEE note under `ExcIEEEAC7B` in `cgmes-dynamics.yml`. A flow-collection change that treats a line-leading `[` as a flow sequence fails these digests.
+A human does this when an intended event-format change lands. The last one was the yaml-test-suite `data-2022-01-17` update, which made the formatter escape values like `test.event` and print anchor and tag names, and added flow-collection markers `{}` / `[]` on `SequenceStart` / `MappingStart`. The corpus has no flow collections, so the marker change on its own does not require new digests. The corpus is full of double-quoted scalars with escapes (`’`, `\r\n`, line continuations) that the parser does not decode yet. Decoding them changes these digests. The schemas do have multi-line scalars whose continuation lines start with `[`, such as the IEEE note under `ExcIEEEAC7B` in `cgmes-dynamics.yml`. A flow-collection change that treats a line-leading `[` as a flow sequence fails these digests.
 
 The digests cover parser events only. `fromStringToNode` is checked for `isRight` and by the benchmark. `compose/` stays outside the loop's allowed paths.
 

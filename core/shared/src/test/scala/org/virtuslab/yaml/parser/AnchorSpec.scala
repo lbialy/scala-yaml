@@ -109,11 +109,11 @@ class AnchorSpec extends BaseYamlSuite {
     val expectedEvents = List(
       StreamStart,
       DocumentStart(),
-      MappingStart(),
+      MappingStart(flow = true),
       Scalar("a", metadata = NodeEventMetadata(Anchor("a"))),
       Scalar("b", metadata = NodeEventMetadata(Anchor("b"))),
       Scalar("seq"),
-      SequenceStart(),
+      SequenceStart(flow = true),
       Alias(Anchor("a")),
       Alias(Anchor("b")),
       SequenceEnd,

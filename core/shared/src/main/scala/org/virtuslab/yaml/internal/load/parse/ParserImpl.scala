@@ -289,7 +289,7 @@ final class ParserImpl private (in: Tokenizer) extends Parser {
     productions.prepend(ParseFlowSeqComma)
     if (token.kind eq TokenKind.MappingKey) {
       productions.prepend(ParseFlowSeqPairKey)
-      Event(EventKind.MappingStart(), token.range)
+      Event(EventKind.MappingStart(flow = true), token.range)
     } else {
       productions.prepend(ParseFlowNode)
       getNextEventImpl()
@@ -376,12 +376,12 @@ final class ParserImpl private (in: Tokenizer) extends Parser {
         in.popToken()
         productions.prepend(ParseFlowMappingEnd)
         productions.prepend(ParseFlowMappingEntryOpt)
-        Event(EventKind.MappingStart(metadata), nextToken.range)
+        Event(EventKind.MappingStart(metadata, flow = true), nextToken.range)
       case _: TokenKind.FlowSequenceStart.type =>
         in.popToken()
         productions.prepend(ParseFlowSeqEnd)
         productions.prepend(ParseFlowSeqEntryOpt)
-        Event(EventKind.SequenceStart(metadata), nextToken.range)
+        Event(EventKind.SequenceStart(metadata, flow = true), nextToken.range)
       case s: TokenKind.Scalar =>
         in.popToken()
         Event(EventKind.Scalar(s.value, s.scalarStyle, metadata), nextToken.range)
