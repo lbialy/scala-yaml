@@ -5,9 +5,8 @@ Python 3 stdlib only. Exit 0 on pass, 1 on regression, 2 on an infrastructure er
 
 Each side is two JMH JSON files (the A,B,A,B schedule). Scores are the mean of
 the two runs. Allocation uses gc.alloc.rate.norm (B/op). Throughput uses the
-primary score (ops/s). A throughput row fails only when the candidate is below
-baseline * (1 - t) and every baseline 99.9% interval is disjoint from every
-candidate 99.9% interval. Touching endpoints count as overlap.
+primary score (ops/s). A throughput row fails when the mean is below
+baseline * (1 - t) and both candidate runs are slower than both baseline runs.
 
 Scaling is (ns per byte of TC57CIM.yml) / (ns per byte of cgmes-core.yml),
 using on-disk byte sizes and the mean throughput. It is computed per benchmark
@@ -255,14 +254,16 @@ def evaluate(baseline, candidate, thresholds, sizes):
                 }
             )
 
-            slower = cand["score"] < base["score"] * (1.0 - thresholds["throughput"])
+            mean_below = cand["score"] < base["score"] * (1.0 - thresholds["throughput"])
+            # Both candidate samples sit strictly below both baseline samples.
+            runs_ordered = max(cand["scores"]) < min(base["scores"])
             separated = intervals_separated(base["intervals"], cand["intervals"])
-            if slower and separated:
+            if mean_below and runs_ordered:
                 throughput_verdict = "FAIL"
-                note = "below tolerance and 99.9% intervals do not overlap"
-            elif slower:
+                note = "mean drop exceeds t and both candidate runs are slower"
+            elif mean_below:
                 throughput_verdict = "PASS"
-                note = "below tolerance but 99.9% intervals overlap"
+                note = "mean drop exceeds t but the two sides' runs overlap"
             else:
                 throughput_verdict = "PASS"
                 note = None
@@ -281,9 +282,10 @@ def evaluate(baseline, candidate, thresholds, sizes):
                     "baseline_intervals": base["intervals"],
                     "candidate_intervals": cand["intervals"],
                     "intervals_overlap": not separated,
+                    "runs_ordered": runs_ordered,
                     "rule": (
-                        "fail only if candidate < baseline * (1 - t) "
-                        "and the 99.9% intervals do not overlap"
+                        "fail when the mean is below baseline * (1 - t) "
+                        "and both candidate runs are slower than both baseline runs"
                     ),
                     "note": note,
                     "verdict": throughput_verdict,
@@ -354,7 +356,7 @@ def fmt_delta(value):
 def result_cell(row):
     note = row.get("note")
     if note and row["verdict"] == "PASS":
-        return "PASS (intervals overlap)"
+        return "PASS (runs overlap)"
     return row["verdict"]
 
 
@@ -367,7 +369,11 @@ def render_markdown(report):
         f"Candidate: `{report['candidate_sha']}`"
         + (" (dirty)" if report["candidate_dirty"] else ""),
         f"Wall time: {report['wall_seconds']:.1f}s",
-        f"JDK: {report['jdk_line']}",
+        "JDK:",
+        "",
+        "```",
+        report["jdk"].rstrip("\n"),
+        "```",
         "",
         "| Benchmark | File | Metric | Baseline | Candidate | Delta | Result |",
         "|---|---|---|---:|---:|---:|---|",
@@ -388,8 +394,8 @@ def render_markdown(report):
         [
             "",
             "B/op fails when candidate > baseline × (1 + t). "
-            "Throughput fails only when candidate < baseline × (1 − t) and the "
-            "99.9% intervals do not overlap. "
+            "Throughput fails when the mean is below baseline × (1 − t) and both "
+            "candidate runs are slower than both baseline runs. "
             "Scaling fails when the TC57CIM.yml / cgmes-core.yml ns-per-byte ratio "
             "exceeds the baseline ratio × (1 + t).",
             "",
@@ -467,11 +473,23 @@ def write_run(directory, name, rows):
     return path
 
 
-def run_case(directory, thresholds, sizes, baseline_rows, candidate_rows):
+def run_case(
+    directory,
+    thresholds,
+    sizes,
+    baseline_rows,
+    candidate_rows,
+    baseline_rows_2=None,
+    candidate_rows_2=None,
+):
+    if baseline_rows_2 is None:
+        baseline_rows_2 = baseline_rows
+    if candidate_rows_2 is None:
+        candidate_rows_2 = candidate_rows
     base_1 = write_run(directory, "b1.json", baseline_rows)
-    base_2 = write_run(directory, "b2.json", baseline_rows)
+    base_2 = write_run(directory, "b2.json", baseline_rows_2)
     cand_1 = write_run(directory, "c1.json", candidate_rows)
-    cand_2 = write_run(directory, "c2.json", candidate_rows)
+    cand_2 = write_run(directory, "c2.json", candidate_rows_2)
     thresholds_path = Path(directory) / "thresholds.json"
     thresholds_path.write_text(json.dumps(thresholds), encoding="utf-8")
     jdk = Path(directory) / "jdk.txt"
@@ -528,16 +546,44 @@ def self_test():
         base = both(100, 1, 1000)
         verdict, rows = run_case(tmp, thresholds, sizes, base, slow)
         thr = next(row for row in rows if row["metric"] == "throughput")
-        expect(verdict == "FAIL" and thr["verdict"] == "FAIL", "separated throughput drop fails")
+        expect(verdict == "FAIL" and thr["verdict"] == "FAIL", "ordered throughput drop fails")
+        expect(thr["runs_ordered"], "20% drop with both runs slower is ordered")
 
-        # Wide intervals overlap even though the mean dropped 15%.
+        # Same 20% drop. The 99.9% intervals overlap (error 30), and the old
+        # rule let this pass. Both runs are still slower than both baseline runs.
         wide = both(80, 30, 1000)
         verdict, rows = run_case(tmp, thresholds, sizes, base, wide)
         thr = next(row for row in rows if row["metric"] == "throughput")
         expect(
-            thr["verdict"] == "PASS" and thr["intervals_overlap"],
-            "overlapping throughput drop passes",
+            verdict == "FAIL" and thr["verdict"] == "FAIL" and thr["intervals_overlap"],
+            "overlapping intervals still fail when every candidate run is slower",
         )
+
+        # Means are 100 and 85 (drop 15%), but candidate 100 beats baseline 80.
+        interleaved_base_hi = both(120, 1, 1000)
+        interleaved_base_lo = both(80, 1, 1000)
+        interleaved_cand_hi = both(100, 1, 1000)
+        interleaved_cand_lo = both(70, 1, 1000)
+        verdict, rows = run_case(
+            tmp,
+            thresholds,
+            sizes,
+            interleaved_base_hi,
+            interleaved_cand_hi,
+            interleaved_base_lo,
+            interleaved_cand_lo,
+        )
+        thr = next(row for row in rows if row["metric"] == "throughput" and row["file"] == SMALL_FILE)
+        expect(
+            verdict == "PASS" and thr["verdict"] == "PASS" and not thr["runs_ordered"],
+            "mean drop past t passes when the runs are not ordered",
+        )
+
+        # Exactly t. 90 < 100 * (1 - 0.10) is false, so the boundary passes.
+        boundary = both(90, 0.1, 1000)
+        verdict, rows = run_case(tmp, thresholds, sizes, base, boundary)
+        thr = next(row for row in rows if row["metric"] == "throughput" and row["file"] == SMALL_FILE)
+        expect(thr["verdict"] == "PASS" and thr["runs_ordered"], "drop equal to t passes")
 
         mild = both(95, 0.1, 1000)
         verdict, rows = run_case(tmp, thresholds, sizes, base, mild)

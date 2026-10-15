@@ -34,3 +34,13 @@ No A/A run failed at the starting tolerances, so none of them were raised.
 | scaling | 0.0604 | starting value (A/A passed) | **0.25** |
 
 Throughput's floor rounds up to the starting value, so `perf/thresholds.json` stays at `0.10`. Allocation's floor is far below `0.05`. Scaling's observed spread is about a quarter of `0.25`.
+
+## Review follow-up
+
+These A/A runs used the earlier throughput rule: mean drop past `t`, and disjoint 99.9% intervals. At one fork and five iterations that interval is about ±3.9× the spread between iterations, so a real drop can sit inside overlapping intervals. The self-test at the time let a 20% drop pass for that reason. The rule is now: the mean is below baseline × (1 − t), and both candidate runs are slower than both baseline runs. `t` stays 0.10. The floor above was computed from the mean-score spread (3 × 0.0327 = 0.0982), which this rule still uses. The three A/A runs were not repeated after the rule change.
+
+Allocation stays at 0.05. The observed noise is about 2e-7, so 0.01 or 0.02 would also clear one comparison. 0.05 is the budget for a whole loop session against a fixed `perf/baseline.sha`. Moving the baseline forward after each accepted change gives every later change a fresh 5%.
+
+The capped per-scalar `:+` injection kept a similar ns/byte on every file, so the scaling rows passed. That run does not show the check firing on a slowdown that grows with mapping size. The probe for that is duplicate-key detection written as a linear scan of keys already seen in the mapping. It has not been run.
+
+The JDK at calibration time was Temurin 21.0.5+11. The gate now accepts any Temurin 21 and records the full `java -version` text in the report.

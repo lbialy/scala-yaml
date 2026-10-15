@@ -1,3 +1,5 @@
 benchmark/**
 perf/**
 build.sbt
+project/**
+integration-tests/**

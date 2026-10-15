@@ -10,11 +10,18 @@
 # benchmark/ and build.sbt are copied from this tree first, so both sides run
 # the same harness and only core/ differs. build.sbt has to be copied because
 # sbt-jmh's Jmh config extends Test, so Jmh/run compiles benchmark tests.
+#
+# The candidate's project/ and integration-tests/ must match the baseline
+# commit. One gate per machine: the lock is /tmp/scala-yaml-perf-gate.lock.
 
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT="$ROOT/perf/out"
+LOCK_DIR=/tmp/scala-yaml-perf-gate.lock
+LOCK_HELD=
+JDK_VERSION_FILE=
+SUITE_LOG=
 
 log() {
   printf '%s\n' "$*" >&2
@@ -25,6 +32,22 @@ die() {
   exit 2
 }
 
+cleanup() {
+  if [[ -n "$LOCK_HELD" ]]; then
+    rm -rf "$LOCK_DIR"
+    LOCK_HELD=
+  fi
+  if [[ -n "$JDK_VERSION_FILE" ]]; then
+    rm -f "$JDK_VERSION_FILE"
+  fi
+  if [[ -n "$SUITE_LOG" ]]; then
+    rm -f "$SUITE_LOG"
+  fi
+}
+
+trap cleanup EXIT
+trap 'exit 2' INT TERM
+
 usage() {
   cat <<'EOF'
 usage: perf/gate.sh [--profile gate|full]
@@ -33,9 +56,31 @@ usage: perf/gate.sh [--profile gate|full]
   full  annotation defaults (5 forks, 10+10 x 1s) for CorpusBench and ParsingBench
 
 exit 0  pass
-exit 1  regression
+exit 1  regression (a metric, or CorpusBenchSuite)
 exit 2  infrastructure error
 EOF
+}
+
+acquire_lock() {
+  local attempt holder again
+  attempt=0
+  while [[ "$attempt" -lt 5 ]]; do
+    attempt=$((attempt + 1))
+    if mkdir "$LOCK_DIR" 2>/dev/null; then
+      echo $$ >"$LOCK_DIR/pid" || die "failed to record pid in $LOCK_DIR"
+      LOCK_HELD=1
+      return 0
+    fi
+    holder=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
+    if [[ -n "$holder" ]] && kill -0 "$holder" 2>/dev/null; then
+      die "another gate is running (pid $holder). One gate per machine."
+    fi
+    again=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
+    if [[ "$again" == "$holder" ]]; then
+      rm -rf "$LOCK_DIR"
+    fi
+  done
+  die "could not acquire $LOCK_DIR"
 }
 
 PROFILE=gate
@@ -82,21 +127,50 @@ fi
 git -C "$ROOT" cat-file -e "${BASELINE_SHA}^{commit}" 2>/dev/null \
   || die "baseline commit is not in this repository: $BASELINE_SHA"
 
+JDK_SPEC=$(awk 'NF && $1 !~ /^#/ { print; exit }' "$ROOT/perf/jdk.txt")
+JDK_VENDOR=${JDK_SPEC%% *}
+JDK_MAJOR=${JDK_SPEC#* }
+if [[ -z "$JDK_VENDOR" || -z "$JDK_MAJOR" || "$JDK_VENDOR" == "$JDK_MAJOR" ]]; then
+  die "perf/jdk.txt must contain \"<vendor> <major>\", for example \"Temurin 21\""
+fi
+if [[ ! "$JDK_MAJOR" =~ ^[0-9]+$ ]]; then
+  die "perf/jdk.txt major version must be an integer, got: $JDK_MAJOR"
+fi
+
+# Drop the "Picked up JAVA_TOOL_OPTIONS" line. java -version writes to stderr.
+write_java_version() {
+  local home=$1
+  local dest=$2
+  local raw
+  [[ -x "$home/bin/java" ]] || return 1
+  raw=$(mktemp /tmp/scala-yaml-jdk.XXXXXX)
+  if ! "$home/bin/java" -version >"$raw" 2>&1; then
+    rm -f "$raw"
+    return 1
+  fi
+  grep -v '^Picked up ' "$raw" >"$dest" || true
+  rm -f "$raw"
+  return 0
+}
+
 version_matches() {
   local home=$1
   local out
-  [[ -x "$home/bin/java" ]] || return 1
   out=$(mktemp /tmp/scala-yaml-jdk.XXXXXX)
-  if ! "$home/bin/java" -version >"$out" 2>&1; then
+  if ! write_java_version "$home" "$out"; then
     rm -f "$out"
     return 1
   fi
-  if cmp -s "$out" "$ROOT/perf/jdk.txt"; then
+  if ! grep -q -F -- "$JDK_VENDOR" "$out"; then
     rm -f "$out"
-    return 0
+    return 1
+  fi
+  if ! grep -E -q "version \"${JDK_MAJOR}([.\"])" "$out"; then
+    rm -f "$out"
+    return 1
   fi
   rm -f "$out"
-  return 1
+  return 0
 }
 
 find_java() {
@@ -135,7 +209,7 @@ find_java() {
       fi
     done
   fi
-  jh=$(/usr/libexec/java_home -v 21 2>/dev/null || true)
+  jh=$(/usr/libexec/java_home -v "$JDK_MAJOR" 2>/dev/null || true)
   if [[ -n "$jh" ]] && version_matches "$jh"; then
     printf '%s\n' "$jh"
     return 0
@@ -143,11 +217,33 @@ find_java() {
   return 1
 }
 
-JAVA_HOME=$(find_java) || die "no JDK matches perf/jdk.txt (Temurin 21 is required)"
+acquire_lock
+
+JAVA_HOME=$(find_java) || die "no JDK matches perf/jdk.txt (${JDK_VENDOR} ${JDK_MAJOR} is required)"
 export JAVA_HOME
 export PATH="$JAVA_HOME/bin:$PATH"
+JDK_VERSION_FILE=$(mktemp /tmp/scala-yaml-jdk.XXXXXX)
+write_java_version "$JAVA_HOME" "$JDK_VERSION_FILE" || die "java -version failed"
 log "JDK: $JAVA_HOME"
-"$JAVA_HOME/bin/java" -version >&2 || die "java -version failed"
+cat "$JDK_VERSION_FILE" >&2
+
+# Tracked and unstaged differences against the baseline commit. Untracked
+# files are a separate check: git diff does not list them.
+set +e
+git -C "$ROOT" diff --quiet "$BASELINE_SHA" -- project integration-tests
+diff_rc=$?
+set -e
+if [[ "$diff_rc" -eq 1 ]]; then
+  git -C "$ROOT" diff --stat "$BASELINE_SHA" -- project integration-tests >&2 || true
+  die "candidate project/ or integration-tests/ differs from $BASELINE_SHA"
+elif [[ "$diff_rc" -ne 0 ]]; then
+  die "git diff failed while checking project/ and integration-tests/ ($diff_rc)"
+fi
+untracked=$(git -C "$ROOT" ls-files --others --exclude-standard -- project integration-tests)
+if [[ -n "$untracked" ]]; then
+  log "$untracked"
+  die "untracked files under project/ or integration-tests/"
+fi
 
 CANDIDATE_SHA=$(git -C "$ROOT" rev-parse HEAD)
 if [[ -n $(git -C "$ROOT" status --porcelain --untracked-files=no) ]]; then
@@ -159,6 +255,27 @@ fi
 CACHE_ROOT="/tmp/scala-yaml-perf-worktrees"
 BASELINE_WT="$CACHE_ROOT/baseline-$BASELINE_SHA"
 START=$(date +%s)
+
+log "==> candidate CorpusBenchSuite"
+SUITE_LOG=$(mktemp /tmp/scala-yaml-suite.XXXXXX)
+set +e
+(
+  cd "$ROOT"
+  sbt --java-home "$JAVA_HOME" -batch 'benchmark/testOnly *CorpusBenchSuite'
+) >"$SUITE_LOG" 2>&1
+suite_rc=$?
+set -e
+cat "$SUITE_LOG" >&2
+if [[ "$suite_rc" -ne 0 ]]; then
+  log "GATE FAIL (CorpusBenchSuite)"
+  exit 1
+fi
+if ! grep -E -q '\[info\] Passed: Total [1-9][0-9]*, Failed 0, Errors 0, Passed [1-9][0-9]*' "$SUITE_LOG"; then
+  die "CorpusBenchSuite did not report a positive passing total"
+fi
+rm -f "$SUITE_LOG"
+SUITE_LOG=
+
 mkdir -p "$CACHE_ROOT"
 if [[ -d "$BASELINE_WT" ]]; then
   git -C "$BASELINE_WT" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
@@ -292,7 +409,7 @@ python3 "$ROOT/perf/compare.py" \
   --baseline-sha "$BASELINE_SHA" \
   --candidate-sha "$CANDIDATE_SHA" \
   --dirty "$DIRTY" \
-  --jdk-file "$ROOT/perf/jdk.txt"
+  --jdk-file "$JDK_VERSION_FILE"
 rc=$?
 set -e
 
